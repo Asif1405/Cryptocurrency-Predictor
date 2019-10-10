@@ -1,94 +1,92 @@
 SEQ_LEN = 60  # how long of a preceeding sequence to collect for RNN
-FUTURE_PERIOD_PREDICT = 3  # how far into the future are we trying to predict?
+FUTURE_PERIOD_PREDICT = 3 
 RATIO_TO_PREDICT = "LTC-USD"
-EPOCHS = 10  # how many passes through our data
-BATCH_SIZE = 64  # how many batches? Try smaller batch if you're getting OOM (out of memory) errors.
+EPOCHS = 10 
+BATCH_SIZE = 64 
 NAME = f"{SEQ_LEN}-SEQ-{FUTURE_PERIOD_PREDICT}-PRED-{int(time.time())}"
 
 
 def classify(current, future):
-    if float(future) > float(current):  # if the future price is higher than the current, that's a buy, or a 1
+    if float(future) > float(current):  # if the future price is higher than the current then 1
         return 1
-    else:  # otherwise... it's a 0!
+    else: 
         return 0
 
 
 def preprocess_df(df):
-    df = df.drop("future", 1)  # don't need this anymore.
+    df = df.drop("future", 1)
 
-    for col in df.columns:  # go through all of the columns
-        if col != "target":  # normalize all ... except for the target itself!
-            df[col] = df[col].pct_change()  # pct change "normalizes" the different currencies (each crypto coin has vastly diff values, we're really more interested in the other coin's movements)
-            df.dropna(inplace=True)  # remove the nas created by pct_change
-            df[col] = preprocessing.scale(df[col].values)  # scale between 0 and 1.
+    for col in df.columns: 
+        if col != "target":  # normalize data, except for the target
+            df[col] = df[col].pct_change() 
+            df.dropna(inplace=True) 
+            df[col] = preprocessing.scale(df[col].values)  # scaling data between 0 and 1.
 
-    df.dropna(inplace=True)  # cleanup again... jic.
+    df.dropna(inplace=True)
 
+    #sequencing data
+    sequential_data = [] 
+    prev_days = deque(maxlen=SEQ_LEN)
+    for i in df.values:  
+        prev_days.append([n for n in i[:-1]]) 
+        if len(prev_days) == SEQ_LEN: 
+            sequential_data.append([np.array(prev_days), i[-1]]) 
 
-    sequential_data = []  # this is a list that will CONTAIN the sequences
-    prev_days = deque(maxlen=SEQ_LEN)  # These will be our actual sequences. They are made with deque, which keeps the maximum length by popping out older values as new ones come in
+    random.shuffle(sequential_data) 
 
-    for i in df.values:  # iterate over the values
-        prev_days.append([n for n in i[:-1]])  # store all but the target
-        if len(prev_days) == SEQ_LEN:  # make sure we have 60 sequences!
-            sequential_data.append([np.array(prev_days), i[-1]])  # append those bad boys!
+    buys = []  
+    sells = []  
 
-    random.shuffle(sequential_data)  # shuffle for good measure.
+    for seq, target in sequential_data:
+        if target == 0:  
+            sells.append([seq, target])  
+        elif target == 1:  
+            buys.append([seq, target]) 
 
-    buys = []  # list that will store our buy sequences and targets
-    sells = []  # list that will store our sell sequences and targets
+    random.shuffle(buys)  
+    random.shuffle(sells)  
 
-    for seq, target in sequential_data:  # iterate over the sequential data
-        if target == 0:  # if it's a "not buy"
-            sells.append([seq, target])  # append to sells list
-        elif target == 1:  # otherwise if the target is a 1...
-            buys.append([seq, target])  # it's a buy!
+    lower = min(len(buys), len(sells))  
 
-    random.shuffle(buys)  # shuffle the buys
-    random.shuffle(sells)  # shuffle the sells!
+    # make sure both lists are only up to the shortest length.
+    buys = buys[:lower] 
+    sells = sells[:lower]  
 
-    lower = min(len(buys), len(sells))  # what's the shorter length?
-
-    buys = buys[:lower]  # make sure both lists are only up to the shortest length.
-    sells = sells[:lower]  # make sure both lists are only up to the shortest length.
-
-    sequential_data = buys+sells  # add them together
-    random.shuffle(sequential_data)  # another shuffle, so the model doesn't get confused with all 1 class then the other.
+    sequential_data = buys+sells  
+    random.shuffle(sequential_data)  
 
     X = []
     y = []
 
-    for seq, target in sequential_data:  # going over our new sequential data
-        X.append(seq)  # X is the sequences
-        y.append(target)  # y is the targets/labels (buys vs sell/notbuy)
+    for seq, target in sequential_data: 
+        X.append(seq)  
+        y.append(target) 
 
-    return np.array(X), y  # return X and y...and make X a numpy array!
+    return np.array(X), y  
 
+#creating main dataframe
+main_df = pd.DataFrame() 
 
-main_df = pd.DataFrame() # begin empty
+ratios = ["BTC-USD", "LTC-USD", "BCH-USD", "ETH-USD"] 
+for ratio in ratios: 
 
-ratios = ["BTC-USD", "LTC-USD", "BCH-USD", "ETH-USD"]  # the 4 ratios we want to consider
-for ratio in ratios:  # begin iteration
-
-    ratio = ratio.split('.csv')[0]  # split away the ticker from the file-name
+    ratio = ratio.split('.csv')[0]  
     print(ratio)
-    dataset = f'crypto_data/{ratio}.csv'  # get the full path to the file.
-    df = pd.read_csv(dataset, names=['time', 'low', 'high', 'open', 'close', 'volume'])  # read in specific file
+    dataset = f'crypto_data/{ratio}.csv'  
+    df = pd.read_csv(dataset, names=['time', 'low', 'high', 'open', 'close', 'volume'])  
 
-    # rename volume and close to include the ticker so we can still which close/volume is which:
     df.rename(columns={"close": f"{ratio}_close", "volume": f"{ratio}_volume"}, inplace=True)
 
-    df.set_index("time", inplace=True)  # set time as index so we can join them on this shared time
-    df = df[[f"{ratio}_close", f"{ratio}_volume"]]  # ignore the other columns besides price and volume
+    df.set_index("time", inplace=True) 
+    df = df[[f"{ratio}_close", f"{ratio}_volume"]] 
 
-    if len(main_df)==0:  # if the dataframe is empty
-        main_df = df  # then it's just the current df
-    else:  # otherwise, join this data to the main one
+    if len(main_df)==0:  
+        main_df = df  
+    else: 
         main_df = main_df.join(df)
 
-main_df.fillna(method="ffill", inplace=True)  # if there are gaps in data, use previously known values
+main_df.fillna(method="ffill", inplace=True) 
 main_df.dropna(inplace=True)
-#print(main_df.head())  # how did we do??
 
 main_df['future'] = main_df[f'{RATIO_TO_PREDICT}_close'].shift(-FUTURE_PERIOD_PREDICT)
 main_df['target'] = list(map(classify, main_df[f'{RATIO_TO_PREDICT}_close'], main_df['future']))
@@ -98,15 +96,17 @@ main_df.dropna(inplace=True)
 times = sorted(main_df.index.values)
 last = sorted(main_df.index.values)[-int(0.05*len(times))]
 
-validation_main_df = main_df[(main_df.index >= last)]
+#creating train and test sets
+test_df = main_df[(main_df.index >= last)]
 main_df = main_df[(main_df.index < last)]
 
+#dividing train and test sets
 train_x, train_y = preprocess_df(main_df)
-validation_x, validation_y = preprocess_df(validation_main_df)
+test_x, test_y = preprocess_df(test_df)
 
-print(f"train data: {len(train_x)} validation: {len(validation_x)}")
+print(f"train data: {len(train_x)} validation: {len(test_x)}")
 print(f"Dont buys: {train_y.count(0)}, buys: {train_y.count(1)}")
-print(f"VALIDATION Dont buys: {validation_y.count(0)}, buys: {validation_y.count(1)}")
+print(f"VALIDATION Dont buys: {test_y.count(0)}, buys: {test_y.count(1)}")
 
 #Building Model
 model = Sequential()
